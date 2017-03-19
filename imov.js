@@ -22,39 +22,31 @@ const iterableFirst = function (iterable, test) {
 //const bozoFrameCountThing = 10;
 
 
-module.exports = 
+module.exports =
 // --------------------------------- IMOV
-class iMov {
-    constructor (socket, playerIndex, options) {
+class theBot {
+    constructor (socket, playerIndex) {
         this.socket = socket;
-        this.pastIndices = [];
         this.generals = new Map();
         this.generalIndices = new Set();
         this.mountains = new Set();
         this.playerIndex = playerIndex;
-        
-        
-        this.homeDefenseRadius = options.homeDefenseRadius;
-        this.bozoFrameCount = options.bozoFrameCountMax;
-        this.bozoFrameCountMax = options.bozoFrameCountMax;
-        this.startWait = options.startWait;
-        this.pastIndicesMax = options.pastIndicesMax;
-        
-        this.gotToZero = true;
     }
 
     update (cities, generals, width, height, size, armies, terrain) {
-        if (this.startWait) {
-            this.startWait--;
-            return;
-        }
-        
         // update map variable
         this.cities = cities;
         this.width = width;
         this.height = height
         this.size = size;
+        // Given map index tells you the count of armies (possibly enemy's) at
+        // that location on the map.
         this.armies = armies;
+        // Given a map index, tells you what is on that terrain: any nonnegative
+        // number is an immobile gaia thing (TILE_EMPTY, TILE_MOUNTAIN,
+        // TILE_FOG, TILE_FOG_OBSTACLE). Otherwise, if it owned by a player,
+        // this is set to the player's index. E.g., 0 for the first player, etc.,
+        // or maybe this.playerIndex for something owned by you.
         this.terrain = terrain;
         this.addGenerals(generals);
         terrain.forEach((t, i) => {
@@ -63,98 +55,36 @@ class iMov {
             }
         });
         this.myGeneral = this.generals.get(this.playerIndex);
-        console.log('myGeneral', this.getCoordString(this.myGeneral));
-        
-        // find army index
-        const oldMaxArmyIndex = this.maxArmyIndex;
-        this.maxArmyIndex = this.getMaxArmyIndex();
-        const maxArmyChanged = oldMaxArmyIndex !== undefined && [oldMaxArmyIndex].concat(this.getNeighbors(oldMaxArmyIndex)).filter(i => i === this.maxArmyIndex).length === 0;
-        if (maxArmyChanged) {
-            console.log(`The max army changed from ${this.getCoordString(oldMaxArmyIndex)} to ${this.getCoordString(this.maxArmyIndex)}`);
-            this.bozoFrameCount = this.bozoFrameCountMax;
+
+        const goToZero = true;
+        if (goToZero) {
+          const maxArmyIndex = this.getMaxArmyIndex();
+          const move = this.getShortestMoveToPosition(maxArmyIndex, 0);
+          if (move !== undefined) {
+            console.log('able to go to zero!');
+            this.attack(maxArmyIndex, move);
+            return;
+          }
         }
-        
-        const endIndex = (() => {
-            // Find a path to the closest enemy to home, abort if would go further than
-            // defense radius.
-            const defenseRadiusPath = this.shortestPath(this.myGeneral, (index, distance) => {
-                if (distance > this.homeDefenseRadius) {
-                    return true;
-                }
-                const t = this.terrain[index];
-                if (t >= 0 && t !== this.playerIndex) {
-                    return true;
-                }
-            });
-            if (defenseRadiusPath.length <= this.homeDefenseRadius) { // enemies are close to general
-                const homeDefenseTarget = defenseRadiusPath[defenseRadiusPath.length - 1];
-                const maxToDefenseTarget = this.shortestPath(this.maxArmyIndex, (index) => index === homeDefenseTarget);
-                if (maxToDefenseTarget) {
-                    console.log('targeting enemy in home defense radius at', this.getCoordString(homeDefenseTarget));
-                    return maxToDefenseTarget[0];
-                }
-            }
-            
-            if (this.bozoFrameCount) {
-                console.log('remaining bozo', this.bozoFrameCount);
-                this.bozoFrameCount--;
-            } else {
-                // General targeting
-                if (this.generals.size > 1) { // attack known location of general
-                    const generalPath = this.shortestPath(this.maxArmyIndex, (index) => this.generalIndices.has(index) && this.terrain[index] !== this.playerIndex);
-                    if (generalPath) {
-                        console.log('targeting general at', this.getCoordString(generalPath[generalPath.length - 1]));
-                        return generalPath[0];
-                    }
-                }
-                
-                // attack enemy armies
-                if ((() => {
-                    for (let i = 0; i < this.terrain.length; i++) {
-                        const t = this.terrain[i];
-                        if (t >= 0 && t !== this.playerIndex) {
-                            return true;
-                        }
-                    }
-                })()) {
-                    const armyPath = this.shortestPath(this.maxArmyIndex, (index) => {
-                        const t = this.terrain[index];
-                        return t >= 0 && t !== this.playerIndex;
-                    });
-                    if (armyPath) {
-                        console.log('targeting army at', this.getCoordString(armyPath[armyPath.length - 1]));
-                        return armyPath[0];
-                    }
-                }
-            }
 
-            // add new indices
-            const indices = this.getIndices(this.maxArmyIndex);
-            console.log(indices);
-            return this.getEndIndex(indices);
-        })();
-        
-        
-        console.log('cities', this.cities);
+        const maxArmyIndex = this.getMaxArmyIndex();
+        const possibleMoves = this.getNeighbors(maxArmyIndex).filter(i => {
+          return this.checkMoveable(i);
+        });
+        const move = possibleMoves[Math.random(possibleMoves.length) * possibleMoves.length|0];
+        if (move !== undefined) {
+          console.log('there are', this.armies[move], 'armies where I am going');
 
-        this.attack(endIndex);
+          this.attack(maxArmyIndex, move);
+        }
     }
-    
-    attack(index) {
-        if (this.pastIndices.length > this.pastIndicesMax) {
-            this.pastIndices.shift();
-        }
-        // console.log('newIndices', newIndices);
-        // store past 3 indices
-        this.pastIndices.push(this.maxArmyIndex);
-        
+
+    attack(from, to) {
         // move to index
-        console.log('attack', this.getCoordString(this.maxArmyIndex), this.getCoordString(index));
-
-        
-        this.socket.emit('attack', this.maxArmyIndex, index);
+        console.log('attack', this.getCoordString(from), this.getCoordString(to));
+        this.socket.emit('attack', from, to);
     }
-    
+
     addGenerals(generals) {
         generals.forEach((general, i) => {
             if (general != -1) {
@@ -182,41 +112,16 @@ class iMov {
         }
     }
 
-    getIndices (index) {
-        return this.getNeighbors(index).filter(index => this.checkMoveable(index));
-    }
-    
     getNeighbors(i) {
         return [
             i + 1,
             i - 1,
             i + this.width,
             i - this.width,
-        ].filter(potentialNeighbor => this.checkInsideMapReal(i, potentialNeighbor));
+        ].filter(potentialNeighbor => this.checkInsideMap(i, potentialNeighbor));
     }
-     
-    getEndIndex (newIndices) {
-        let deleteIndex = this.pastIndices.length;
-         
-        //console.log('checkThis', this.pastIndices[this.deleteIndex-2]);
-        while (newIndices.length > 1 && deleteIndex > 0) {
-            deleteIndex--;
-            
-            newIndices = newIndices.filter((value) => { 
-                if (value == this.pastIndices[deleteIndex]) {
-                    console.log('filtering', this.getCoordString(this.pastIndices[deleteIndex]));
-                }
-                return value != this.pastIndices[deleteIndex];
-            });
-        }
 
-        if (newIndices.length == 0) {
-            throw new Error('Indice should not become 0');
-        }
 
-        return newIndices[Math.floor(Math.random()*newIndices.length)]; 
-    }
-     
     getMaxArmyIndex () {
         let arr = this.armies;
         if (arr.length === 0) {
@@ -234,28 +139,19 @@ class iMov {
         this.armySize = max;
         return maxIndex;
     }
-    
-    checkMoveable (index) {
-        return this.checkMoveableReal(this.maxArmyIndex, index);
-    }
-    
-    checkMoveableReal(from, to) {
-        return this.checkInsideMapReal(from, to)
-        && this.checkCityTakeable(to)
+
+    checkMoveable(to) {
+        return this.checkCityTakeable(to)
         && !this.isMountain(to);
     }
-    
-    checkInsideMap (index) {
-        return this.checkInsideMapReal(this.maxArmyIndex, index);
-    }
-    
-    checkInsideMapReal(from, to) {
+
+    checkInsideMap(from, to) {
         // TODO. This is done very wrong. Redo this!
-        
+
         // check if goes over
         const fromRow = this.getRow(from);
         const toRow = this.getRow(to);
-        
+
         if (Math.abs(from-to) == 1) {
             // console.log('toRow from Row', toRow, fromRow);
             return toRow == fromRow;
@@ -266,10 +162,10 @@ class iMov {
         }
         throw new Error(`Assertion that ${to} (${this.getCoordString(to)}) is a neighbor of ${from} (${this.getCoordString(from)}) failed (fromRow=${fromRow}, toRow=${toRow})`);
     }
-    
+
     checkCityTakeable (index) {
-        
-        
+
+
         for (let city of this.cities) {
 
             // Check if army big enough to take city
@@ -285,24 +181,34 @@ class iMov {
 
         return true;
     }
-    
+
     isMountain (index) {
         //console.log('terrain', this.terrain);
         //console.log('terrrrrrrrrrrrrrrrrrrrrrr', this.terrain[index]);
         return this.mountains.has(index);
     }
-    
+
     getCol (index) {
         return index % this.width;
     }
-    
+
     getRow (index) {
         // console.log('getRow', index/this.width);
         return Math.floor(index/this.width);
     }
-    
+
     getCoordString(index) {
-        return `<${this.getCol(index)}, ${this.getRow(index)}>`;
+        return `(${this.getCol(index)}, ${this.getRow(index)})`;
+    }
+
+    /**
+     * Get the move you should make to move the army at
+     */
+    getShortestMoveToPosition(from, to) {
+      const path = this.shortestPath(from, index => to === index);
+      if (path) {
+        return path[0];
+      }
     }
 
     /**
@@ -313,12 +219,12 @@ class iMov {
      * isTarget: function(index, distance): returns true if the passed index is the target.
      *
      * options:
-     * - test function (a, b): returns true if the move is allowed. Defaults to checking checkMoveableReal
+     * - test function (a, b): returns true if the move is allowed. Defaults to checking checkMoveable
      * - visit function (i, distance): passed an index and its distance from a. Called for a.
      */
     shortestPath(a, testTarget, options) {
         options = Object.assign({
-            test: (from, to) => this.checkMoveableReal(from, to),
+            test: (from, to) => this.checkMoveable(from, to),
             visit: (i, distance) => {},
         }, options);
         if (testTarget(a)) {
@@ -327,16 +233,16 @@ class iMov {
         }
 
         const pathArray = new Array(this.terrain.length);
-        // Mark your original location as -1. 
+        // Mark your original location as -1.
         pathArray[a] = -1; // -1 means source
         // Initialize queue to contain the initial node.
         const nextQ = [{ index: a, distance: 0, }];
-        
+
         // While there are things in the Q, process it.
         while (nextQ.length) {
             const visiting = nextQ.shift();
             options.visit(visiting.index, visiting.distance);
-            
+
             // Check if what we're visiting is the target.
             if (testTarget(visiting.index, visiting.distance)) {
                 // We found the target! Trace back to origin!
@@ -358,7 +264,7 @@ class iMov {
                     // This neighbor has been visited already. Skip.
                     continue;
                 }
-                
+
                 // Mark the neighbor's source as our visiting node and
                 // add to the nextQ.
                 pathArray[neighbor] = visiting.index;
@@ -370,12 +276,5 @@ class iMov {
         }
         return null;
     }
-    
-    printSpecialVariables() {
-        console.log('homeDefenseRadius:', this.homeDefenseRadius);
-        console.log('bozoFrameCountMax:', this.bozoFrameCount);
-        console.log('startWait:', this.startWait);
-        console.log('pastIndicesMax:', this.pastIndicesMax);
-    }
-    
+
 }
